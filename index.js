@@ -129,25 +129,3 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp();
-                    const webhookUrl = process.env.WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
-                    if (webhookUrl) {
-                        try {
-                            await axios.post(webhookUrl, {
-                                sender: senderJid,    // الصيغة الكاملة: 201xxxxxxxxx@s.whatsapp.net
-                                phone: cleanPhone,    // رقم الهاتف فقط: 201xxxxxxxxx
-                                message: text,
-                                timestamp: msg.messageTimestamp
-                            });
-                            console.log('🚀 تم إرسال الرسالة للـ Webhook بنجاح');
-                        } catch (err) {
-                            console.error('❌ خطأ في الإرسال للـ Webhook:', err.message);
-                        }
-                    }
-                }
-            }
-        }
-    });
-}
-
-connectToWhatsApp();
-
