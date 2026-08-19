@@ -1,15 +1,42 @@
-global.crypto = require('crypto'); // أضف هذا السطر في البداية تماماً
-
+global.crypto = require('crypto');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const axios = require('axios');
-const qrcode = require('qrcode-terminal');
+const express = require('express');
+const QRCode = require('qrcode');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+let latestQR = '';
+
+// صفحة لعرض الـ QR كصورة واضحة
+app.get('/qr', async (req, res) => {
+    if (!latestQR) {
+        return res.send('<h2>جاري توليد الـ QR Code أو تم الاتصال بالفعل... قم بتحديث الصفحة بعد ثوانٍ.</h2>');
+    }
+    try {
+        const qrImage = await QRCode.toDataURL(latestQR);
+        res.send(`
+            <html>
+                <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#f0f2f5;">
+                    <h2>افتح الواتساب واعمل Scan للـ QR Code:</h2>
+                    <img src="${qrImage}" style="border:10px solid white;border-radius:8px;box-shadow:0 4px 10px rgba(0,0,0,0.1);" />
+                </body>
+            </html>
+        `);
+    } catch (err) {
+        res.status(500).send('خطأ في إنتاج الـ QR Code');
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 سيرفر الـ QR شغال على البورت ${PORT}`);
+});
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
         browser: ["Railway Bot", "Chrome", "1.0.0"]
     });
 
@@ -19,9 +46,9 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
+            latestQR = qr;
             console.log("\n=========================================");
-            console.log("امسح الـ QR Code التالي للربط:");
-            qrcode.generate(qr, { small: true });
+            console.log("🔗 تم استخراج الـ QR! افتح رابط الصفحة لعمل Scan");
             console.log("=========================================\n");
         }
 
@@ -32,6 +59,7 @@ async function connectToWhatsApp() {
                 connectToWhatsApp();
             }
         } else if (connection === 'open') {
+            latestQR = ''; // إخفاء الـ QR بعد النجاح
             console.log('✅ تم الاتصال بحساب الواتساب بنجاح!');
         }
     });
