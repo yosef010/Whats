@@ -31,7 +31,7 @@ app.get('/qr', async (req, res) => {
     }
 });
 
-// Endpoint إرسال الرد للعميل
+// Endpoint إرسال الرد للعميل (يدعم LID ورقم الهاتف العادي)
 app.post('/send-message', async (req, res) => {
     const { to, message } = req.body;
 
@@ -44,9 +44,13 @@ app.post('/send-message', async (req, res) => {
     }
 
     try {
-        // تنظيف الرقم تماماً واستخراج الأرقام فقط
-        const cleanNumber = to.toString().replace(/[^0-9]/g, '');
-        const formattedJid = `${cleanNumber}@s.whatsapp.net`;
+        let formattedJid = to.toString().trim();
+        
+        // إذا لم يكن الرابط يحتوي على @ (أي مجرد أرقام هاتف صافية)
+        if (!formattedJid.includes('@')) {
+            const cleanNumber = formattedJid.replace(/[^0-9]/g, '');
+            formattedJid = `${cleanNumber}@s.whatsapp.net`;
+        }
         
         await sock.sendMessage(formattedJid, { text: message });
         console.log(`📤 تم إرسال الرسالة إلى ${formattedJid}: ${message}`);
@@ -78,9 +82,7 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         
-        if (qr) {
-            latestQR = qr;
-        }
+        if (qr) latestQR = qr;
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
@@ -98,13 +100,35 @@ async function connectToWhatsApp() {
                     const senderJid = msg.key.remoteJid;
                     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
-                    if (!text || senderJid.endsWith('@g.us')) continue; // استبعاد الجروبات
+                    if (!text || senderJid.endsWith('@g.us')) continue;
 
-                    // استخراج رقم الهاتف الصافي بدون @s.whatsapp.net
-                    const cleanPhone = senderJid.split('@')[0];
+                    // محاولة استخراج رقم الهاتف الحقيقي حتى لو كانت الرسالة LID
+                    let phoneJid = msg.key.participant || msg.participant || senderJid;
+                    let cleanPhone = phoneJid.split('@')[0];
 
-                    console.log(`📥 رسالة من ${cleanPhone}: ${text}`);
+                    console.log(`📥 رسالة من ${senderJid}: ${text}`);
 
+                    const webhookUrl = process.env.WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
+                    if (webhookUrl) {
+                        try {
+                            await axios.post(webhookUrl, {
+                                sender: senderJid,    // المعرف الذي سُترسل عليه الردود (سواء LID أو عادي)
+                                phone: cleanPhone,    // الرقم الصافي المتاح
+                                message: text,
+                                timestamp: msg.messageTimestamp
+                            });
+                            console.log('🚀 تم إرسال الرسالة للـ Webhook بنجاح');
+                        } catch (err) {
+                            console.error('❌ خطأ في الإرسال للـ Webhook:', err.message);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+connectToWhatsApp();
                     const webhookUrl = process.env.WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
                     if (webhookUrl) {
                         try {
