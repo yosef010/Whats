@@ -5,7 +5,7 @@ const express = require('express');
 const QRCode = require('qrcode');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 let latestQR = '';
 
 // صفحة لعرض الـ QR كصورة واضحة
