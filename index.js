@@ -5,13 +5,13 @@ const express = require('express');
 const QRCode = require('qrcode');
 
 const app = express();
-app.use(express.json()); // لتمكين السيرفر من قراءة بيانات JSON الواردة في الـ Body
+app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
 let latestQR = '';
-let sock = null; // متغير عام لحفظ كائن الاتصال بالواتساب
+let sock = null;
 
-// 1. صفحة عرض الـ QR Code
+// صفحة الـ QR
 app.get('/qr', async (req, res) => {
     if (!latestQR) {
         return res.send('<h2>جاري توليد الـ QR Code أو تم الاتصال بالفعل... قم بتحديث الصفحة.</h2>');
@@ -31,26 +31,27 @@ app.get('/qr', async (req, res) => {
     }
 });
 
-// 2. Endpoint جديدة لإرسال الردود من n8n إلى العميل
+// Endpoint إرسال الرد للعميل
 app.post('/send-message', async (req, res) => {
     const { to, message } = req.body;
 
     if (!to || !message) {
-        return res.status(400).json({ status: 'error', error: 'تأكد من إرسال to و message في الـ body' });
+        return res.status(400).json({ status: 'error', error: 'تأكد من إرسال to و message' });
     }
 
     if (!sock) {
-        return res.status(500).json({ status: 'error', error: 'اتصال الواتساب غير جاهز حالياً' });
+        return res.status(503).json({ status: 'error', error: 'البوت غير متصل حالياً' });
     }
 
     try {
-        // التأكد من تنسيق الرقم بالشكل الصحيح لـ WhatsApp (مثال: 201xxxxxxxxx@s.whatsapp.net)
-        const formattedJid = to.includes('@s.whatsapp.net') ? to : `${to.replace('+', '').trim()}@s.whatsapp.net`;
+        // تنظيف الرقم تماماً واستخراج الأرقام فقط
+        const cleanNumber = to.toString().replace(/[^0-9]/g, '');
+        const formattedJid = `${cleanNumber}@s.whatsapp.net`;
         
         await sock.sendMessage(formattedJid, { text: message });
-        console.log(`📤 تم إرسال رد إلى ${formattedJid}: ${message}`);
+        console.log(`📤 تم إرسال الرسالة إلى ${formattedJid}: ${message}`);
         
-        return res.json({ status: 'success', message: 'تم إرسال الرسالة بنجاح' });
+        return res.json({ status: 'success', message: 'تم الإرسال بنجاح' });
     } catch (err) {
         console.error('❌ خطأ أثناء إرسال الرسالة:', err.message);
         return res.status(500).json({ status: 'error', error: err.message });
@@ -61,13 +62,15 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 السيرفر شغال على البورت ${PORT}`);
 });
 
-// 3. ربط Baileys بواتساب
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
     sock = makeWASocket({
         auth: state,
-        browser: ["Railway Bot", "Chrome", "1.0.0"]
+        browser: ["Railway Bot", "Chrome", "1.0.0"],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        syncFullHistory: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -77,17 +80,11 @@ async function connectToWhatsApp() {
         
         if (qr) {
             latestQR = qr;
-            console.log("\n=========================================");
-            console.log("🔗 تم استخراج الـ QR! افتح رابط الصفحة لعمل Scan");
-            console.log("=========================================\n");
         }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
-            console.log('انقطع الاتصال، جاري إعادة المحاولة...', shouldReconnect);
-            if (shouldReconnect) {
-                connectToWhatsApp();
-            }
+            if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
             latestQR = '';
             console.log('✅ تم الاتصال بحساب الواتساب بنجاح!');
@@ -98,18 +95,22 @@ async function connectToWhatsApp() {
         if (type === 'notify') {
             for (const msg of messages) {
                 if (!msg.key.fromMe && msg.message) {
-                    const sender = msg.key.remoteJid;
+                    const senderJid = msg.key.remoteJid;
                     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
-                    if (!text) continue;
+                    if (!text || senderJid.endsWith('@g.us')) continue; // استبعاد الجروبات
 
-                    console.log(`📥 رسالة من ${sender}: ${text}`);
+                    // استخراج رقم الهاتف الصافي بدون @s.whatsapp.net
+                    const cleanPhone = senderJid.split('@')[0];
+
+                    console.log(`📥 رسالة من ${cleanPhone}: ${text}`);
 
                     const webhookUrl = process.env.WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
                     if (webhookUrl) {
                         try {
                             await axios.post(webhookUrl, {
-                                sender: sender,
+                                sender: senderJid,    // الصيغة الكاملة: 201xxxxxxxxx@s.whatsapp.net
+                                phone: cleanPhone,    // رقم الهاتف فقط: 201xxxxxxxxx
                                 message: text,
                                 timestamp: msg.messageTimestamp
                             });
@@ -125,3 +126,4 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp();
+
