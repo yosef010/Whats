@@ -1,9 +1,10 @@
+global.crypto = require('crypto'); // أضف هذا السطر في البداية تماماً
+
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const axios = require('axios');
 const qrcode = require('qrcode-terminal');
 
 async function connectToWhatsApp() {
-    // حفظ بيانات الجلسة في فولدر auth_info
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
     const sock = makeWASocket({
@@ -35,7 +36,6 @@ async function connectToWhatsApp() {
         }
     });
 
-    // استلام الرسائل
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type === 'notify') {
             for (const msg of messages) {
@@ -59,8 +59,6 @@ async function connectToWhatsApp() {
                         } catch (err) {
                             console.error('❌ خطأ في الإرسال للـ Webhook:', err.message);
                         }
-                    } else {
-                        console.log('⚠️ متغير البيئة WEBHOOK_URL غير مضبوط!');
                     }
                 }
             }
