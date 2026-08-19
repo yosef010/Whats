@@ -1,6 +1,5 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
-# تثبيت git المطلوب من مكتبة Baileys
 RUN apk add --no-cache git
 
 WORKDIR /app
@@ -11,3 +10,4 @@ RUN npm install
 COPY . .
 
 CMD ["npm", "start"]
+
