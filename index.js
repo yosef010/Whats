@@ -1,5 +1,5 @@
 global.crypto = require('crypto');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const axios = require('axios');
 const express = require('express');
 const QRCode = require('qrcode');
@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 8080;
 let latestQR = '';
 let sock = null;
 
-// صفحة الـ QR Code
+// 1. صفحة عرض الـ QR Code
 app.get('/qr', async (req, res) => {
     if (!latestQR) {
         return res.send('<h2>جاري توليد الـ QR Code أو تم الاتصال بالفعل... قم بتحديث الصفحة.</h2>');
@@ -31,7 +31,7 @@ app.get('/qr', async (req, res) => {
     }
 });
 
-// Endpoint إرسال الرد للعميل (يدعم صيغ LID والأرقام العادية)
+// 2. Endpoint لإرسال الرد من n8n للواتساب
 app.post('/send-message', async (req, res) => {
     const { to, message } = req.body;
 
@@ -40,24 +40,20 @@ app.post('/send-message', async (req, res) => {
     }
 
     if (!sock || !sock.user) {
-        return res.status(503).json({ status: 'error', error: 'البوت غير متصل حالياً، انتظر المزامنة...' });
+        return res.status(503).json({ status: 'error', error: 'البوت غير متصل حالياً' });
     }
 
     try {
         let formattedJid = to.toString().trim();
-        
-        // إذا كان الإدخال مجرد أرقام بدون نطاق @
         if (!formattedJid.includes('@')) {
             const cleanNumber = formattedJid.replace(/[^0-9]/g, '');
             formattedJid = `${cleanNumber}@s.whatsapp.net`;
         }
         
         await sock.sendMessage(formattedJid, { text: message });
-        console.log(`📤 تم إرسال الرسالة إلى ${formattedJid}: ${message}`);
-        
+        console.log(`📤 تم الإرسال إلى ${formattedJid}`);
         return res.json({ status: 'success', message: 'تم الإرسال بنجاح' });
     } catch (err) {
-        console.error('❌ خطأ أثناء إرسال الرسالة:', err.message);
         return res.status(500).json({ status: 'error', error: err.message });
     }
 });
@@ -66,6 +62,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 السيرفر شغال على البورت ${PORT}`);
 });
 
+// 3. دالة الاتصال الرئيسية
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
@@ -81,55 +78,54 @@ async function connectToWhatsApp() {
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
         if (qr) latestQR = qr;
 
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            
-            console.log('⚠️ انقطع الاتصال، جاري إعادة المحاولة...', { statusCode, shouldReconnect });
-            
-            if (shouldReconnect) {
-                setTimeout(() => {
-                    connectToWhatsApp();
-                }, 5000); // إعادة الاتصال تلقائياً بعد 5 ثوانٍ
-            }
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('⚠️ انقطع الاتصال، جاري إعادة المحاولة...', shouldReconnect);
+            if (shouldReconnect) setTimeout(connectToWhatsApp, 5000);
         } else if (connection === 'open') {
             latestQR = '';
-            console.log('✅ تم الاتصال بحساب الواتساب بنجاح!');
+            console.log('✅ تم الاتصال بنجاح!');
         }
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type === 'notify') {
-            for (const msg of messages) {
-                if (!msg.key.fromMe && msg.message) {
-                    const senderJid = msg.key.remoteJid;
-                    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        if (type !== 'notify') return;
 
-                    if (!text || senderJid.endsWith('@g.us')) continue; // استبعاد المجموعات
+        for (const msg of messages) {
+            if (msg.key.fromMe || !msg.message) continue;
 
-                    let phoneJid = msg.key.participant || msg.participant || senderJid;
-                    let cleanPhone = phoneJid.split('@')[0];
+            const senderJid = msg.key.remoteJid;
+            if (senderJid.endsWith('@g.us')) continue;
 
-                    console.log(`📥 رسالة من ${senderJid}: ${text}`);
+            // استخراج النص والصورة
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+            const isImage = !!msg.message.imageMessage;
+            let base64Image = null;
 
-                    const webhookUrl = process.env.WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
-                    if (webhookUrl) {
-                        try {
-                            await axios.post(webhookUrl, {
-                                sender: senderJid,    // المعرف الذي يُستخدم للردود (سواء LID أو رقم عادي)
-                                phone: cleanPhone,    // الرقم الصافي
-                                message: text,
-                                timestamp: msg.messageTimestamp
-                            });
-                            console.log('🚀 تم إرسال الرسالة للـ Webhook بنجاح');
-                        } catch (err) {
-                            console.error('❌ خطأ في الإرسال للـ Webhook:', err.message);
-                        }
-                    }
-                }
+            if (isImage) {
+                try {
+                    const stream = await downloadContentFromMessage(msg.message.imageMessage, 'image');
+                    let buffer = Buffer.from([]);
+                    for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+                    base64Image = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+                } catch (err) { console.error('خطأ تحميل الصورة:', err); }
+            }
+
+            // إرسال البيانات فوراً للـ Webhook
+            const webhookUrl = process.env.WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
+            if (webhookUrl) {
+                try {
+                    await axios.post(webhookUrl, {
+                        sender: senderJid,
+                        phone: senderJid.split('@')[0],
+                        message: text,
+                        image: base64Image,
+                        timestamp: msg.messageTimestamp
+                    });
+                    console.log(`🚀 تم الإرسال للـ Webhook فوراً`);
+                } catch (err) { console.error('خطأ في Webhook:', err.message); }
             }
         }
     });
