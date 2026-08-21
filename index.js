@@ -11,11 +11,8 @@ const PORT = process.env.PORT || 8080;
 let latestQR = '';
 let sock = null;
 
-// 1. صفحة عرض الـ QR Code
 app.get('/qr', async (req, res) => {
-    if (!latestQR) {
-        return res.send('<h2>جاري توليد الـ QR Code أو تم الاتصال بالفعل... قم بتحديث الصفحة.</h2>');
-    }
+    if (!latestQR) return res.send('<h2>جاري توليد الـ QR Code أو تم الاتصال بالفعل... قم بتحديث الصفحة.</h2>');
     try {
         const qrImage = await QRCode.toDataURL(latestQR);
         res.send(`
@@ -26,22 +23,13 @@ app.get('/qr', async (req, res) => {
                 </body>
             </html>
         `);
-    } catch (err) {
-        res.status(500).send('خطأ في إنتاج الـ QR Code');
-    }
+    } catch (err) { res.status(500).send('خطأ في إنتاج الـ QR Code'); }
 });
 
-// 2. Endpoint لإرسال الرد من n8n للواتساب
 app.post('/send-message', async (req, res) => {
     const { to, message } = req.body;
-
-    if (!to || !message) {
-        return res.status(400).json({ status: 'error', error: 'تأكد من إرسال to و message' });
-    }
-
-    if (!sock || !sock.user) {
-        return res.status(503).json({ status: 'error', error: 'البوت غير متصل حالياً' });
-    }
+    if (!to || !message) return res.status(400).json({ status: 'error', error: 'تأكد من إرسال to و message' });
+    if (!sock || !sock.user) return res.status(503).json({ status: 'error', error: 'البوت غير متصل حالياً' });
 
     try {
         let formattedJid = to.toString().trim();
@@ -49,24 +37,15 @@ app.post('/send-message', async (req, res) => {
             const cleanNumber = formattedJid.replace(/[^0-9]/g, '');
             formattedJid = `${cleanNumber}@s.whatsapp.net`;
         }
-        
         await sock.sendMessage(formattedJid, { text: message });
-        console.log(`📤 تم الإرسال إلى ${formattedJid}`);
         return res.json({ status: 'success', message: 'تم الإرسال بنجاح' });
-    } catch (err) {
-        console.error('❌ خطأ في الإرسال:', err.message);
-        return res.status(500).json({ status: 'error', error: err.message });
-    }
+    } catch (err) { return res.status(500).json({ status: 'error', error: err.message }); }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🌐 السيرفر شغال على البورت ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`🌐 السيرفر شغال على البورت ${PORT}`));
 
-// 3. دالة الاتصال الرئيسية
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-    
     sock = makeWASocket({
         auth: state,
         browser: ["Railway Bot", "Chrome", "1.0.0"],
@@ -80,11 +59,8 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) latestQR = qr;
-
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log('⚠️ انقطع الاتصال، جاري إعادة المحاولة...', { statusCode, shouldReconnect });
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) setTimeout(connectToWhatsApp, 5000);
         } else if (connection === 'open') {
             latestQR = '';
@@ -98,63 +74,60 @@ async function connectToWhatsApp() {
         for (const msg of messages) {
             try {
                 if (!msg || msg.key.fromMe || !msg.message) continue;
-
                 const senderJid = msg.key.remoteJid;
                 if (!senderJid || senderJid.endsWith('@g.us')) continue;
 
                 const msgContent = msg.message;
 
-                // استخراج النص (سواء رسالة عادية أو caption مكتوب مع الصورة/الفيديو)
+                // 1. استخراج النص أو الـ Caption
                 const text = msgContent.conversation || 
                              msgContent.extendedTextMessage?.text || 
                              msgContent.imageMessage?.caption || 
                              msgContent.videoMessage?.caption || '';
 
-                // فحص إذا كان فيه صورة أو صوت
                 const imageMsg = msgContent.imageMessage;
                 const audioMsg = msgContent.audioMessage || msgContent.pttMessage;
 
+                let msgType = 'text'; // الافتراضي: نص
                 let mediaBase64 = null;
                 let mimeType = null;
 
+                // 2. تحديد النوع وتنزيل الميديا
                 if (imageMsg) {
+                    msgType = 'image';
                     try {
                         const stream = await downloadContentFromMessage(imageMsg, 'image');
                         let buffer = Buffer.from([]);
                         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
                         mediaBase64 = `data:image/jpeg;base64,${buffer.toString('base64')}`;
                         mimeType = 'image/jpeg';
-                    } catch (e) {
-                        console.error('خطأ في تحميل الصورة:', e.message);
-                    }
+                    } catch (e) { console.error('خطأ صورة:', e.message); }
                 } else if (audioMsg) {
+                    msgType = 'audio';
                     try {
                         const stream = await downloadContentFromMessage(audioMsg, 'audio');
                         let buffer = Buffer.from([]);
                         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
                         mediaBase64 = `data:audio/ogg;base64,${buffer.toString('base64')}`;
                         mimeType = 'audio/ogg';
-                    } catch (e) {
-                        console.error('خطأ في تحميل الصوت:', e.message);
-                    }
+                    } catch (e) { console.error('خطأ صوت:', e.message); }
                 }
 
-                // إرسال البيانات للـ Webhook
+                // 3. الإرسال للـ Webhook
                 const webhookUrl = process.env.WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
                 if (webhookUrl) {
                     await axios.post(webhookUrl, {
+                        type: msgType,               // السيرفر هنا يحدد لك النوع مباشر (text / image / audio)
                         sender: senderJid,
                         phone: senderJid.split('@')[0],
-                        message: text,
-                        image: mimeType?.startsWith('image') ? mediaBase64 : null, // دعم الحقل القديم للصورة
-                        media: mediaBase64 ? { data: mediaBase64, mimeType: mimeType } : null,
+                        message: text,               // النص (أو الـ Caption المكتوب تحت الصورة)
+                        media: mediaBase64,          // بيانات الميديا الخام
+                        mimeType: mimeType,          // نوع الـ Mime
                         timestamp: msg.messageTimestamp
                     });
-                    console.log(`🚀 تم إرسال الرسالة للـ Webhook بنجاح (${senderJid})`);
+                    console.log(`🚀 تم الإرسال للـ Webhook | النوع: ${msgType}`);
                 }
-            } catch (err) {
-                console.error('❌ خطأ معالجة الرسالة الفردية:', err.message);
-            }
+            } catch (err) { console.error('❌ خطأ:', err.message); }
         }
     });
 }
